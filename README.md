@@ -58,7 +58,7 @@ Perfect for forex, gold, indices, and CFD traders who want honest feedback on th
    python winly.py
 
 **Direct Download (Recommended)**  
-→ [Winly.exe (Windows)](https://github.com/yourusername/Winly/releases/latest/download/Winly.exe)
+→ [Winly.exe (Windows)](https://github.com/victory65/Winly/releases/latest/download/Winly.exe)
 
 ### Option 2: Standalone .exe (No Python needed)
 
