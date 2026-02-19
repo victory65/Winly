@@ -87,8 +87,6 @@ Your login details are never saved to disk
 The app only connects locally to your own MT5 terminal
 All analysis happens on your computer
 
-Security Note:
-Before pushing to GitHub, remove the default account/password/server values from winly.py (lines with value="...").
 
 ## 🛠 Tech Stack
 
