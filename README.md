@@ -45,7 +45,7 @@ Perfect for forex, gold, indices, and CFD traders who want honest feedback on th
 
 1. Clone the repo:
    ```bash
-   git clone https://github.com/yourusername/Winly.git
+   git clone https://github.com/victory65/Winly.git
    cd Winly
    python winly.py
 
