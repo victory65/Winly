@@ -4,6 +4,8 @@ from tkinter import ttk, messagebox, filedialog
 import MetaTrader5 as mt5
 from datetime import datetime
 from collections import defaultdict
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # ────────────────────────────────────────────────
 # Global variables
@@ -18,6 +20,7 @@ mt5_path_var   = None
 status_var     = None
 root           = None
 results_frame  = None
+trades_data    = None   # NEW: stores processed trades for CSV + graph
 
 
 def browse_mt5_path():
@@ -56,7 +59,83 @@ def is_real_trading_symbol(symbol: str) -> bool:
     return True
 
 
+# ────────────────────────────────────────────────
+# NEW: Export CSV feature (exact columns requested)
+# ────────────────────────────────────────────────
+def export_to_csv():
+    global trades_data
+    if not trades_data:
+        messagebox.showwarning("No Data", "No trades to export. Run analysis first.")
+        return
+
+    file_path = filedialog.asksaveasfilename(
+        title="Save Trades to CSV",
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        initialfile=f"winly_trades_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    )
+    if not file_path:
+        return
+
+    df_data = []
+    for t in trades_data:
+        df_data.append({
+            "date": t["date"].strftime("%Y-%m-%d %H:%M:%S"),
+            "pair": t["pair"],
+            "type": t["type"],
+            "size": t["size"],
+            "entry": t["entry"],
+            "exist": t["exist"],          # exact column name requested
+            "profit": t["profit"],
+            "cumulative_equity": t["cumulative_equity"]
+        })
+
+    df = pd.DataFrame(df_data)
+    df.to_csv(file_path, index=False)
+    messagebox.showinfo("Export Successful", f"CSV saved to:\n{file_path}")
+
+
+# ────────────────────────────────────────────────
+# NEW: Equity graph feature (basic line plot + save PNG)
+# ────────────────────────────────────────────────
+def generate_equity_graph():
+    global trades_data
+    if not trades_data:
+        messagebox.showwarning("No Data", "No trades to plot. Run analysis first.")
+        return
+
+    dates = [t["date"] for t in trades_data]
+    equities = [t["cumulative_equity"] for t in trades_data]
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, equities, marker='o', linestyle='-', linewidth=2, color='#4682B4')
+    plt.title("Equity Curve: Time vs Cumulative Equity", fontsize=14)
+    plt.xlabel("Trade Close Date", fontsize=12)
+    plt.ylabel("Cumulative Equity ($)", fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    file_path = filedialog.asksaveasfilename(
+        title="Save Equity Graph as PNG",
+        defaultextension=".png",
+        filetypes=[("PNG files", "*.png"), ("All files", "*.*")],
+        initialfile=f"winly_equity_graph_{datetime.now().strftime('%Y-%m-%d')}.png"
+    )
+    if file_path:
+        plt.savefig(file_path, dpi=300)
+        plt.close()
+        messagebox.showinfo("Graph Saved", f"Equity graph saved to:\n{file_path}\n\n(Basic matplotlib line plot - offline)")
+    else:
+        plt.close()
+
+
+# ────────────────────────────────────────────────
+# Updated analysis with proper trade reconstruction
+# (handles entry/exit prices + partial closes)
+# ────────────────────────────────────────────────
 def connect_and_analyze():
+    global trades_data
     acc_str = account_var.get().strip()
     pwd     = password_var.get().strip()
     srv     = server_var.get().strip()
@@ -106,34 +185,65 @@ def connect_and_analyze():
             deals = []
 
         if not deals:
-            show_results(0, "0.0%", acc_info.balance, "No trade history found.")
+            show_results(0, "0.0%", acc_info.balance, "No trade history found.", None)
             return
 
-        symbol_stats = defaultdict(lambda: {"profit": 0.0, "count": 0, "wins": 0})
-
-        real_deals_count = 0
-
+        # ─── Reconstruct trades (entry + exit prices) ───
+        entry_dict = {}
         for deal in deals:
-            if deal.entry != mt5.DEAL_ENTRY_OUT:
-                continue
-
             symbol = (deal.symbol or "").strip()
-            if not is_real_trading_symbol(symbol):
+            if deal.entry != mt5.DEAL_ENTRY_IN or not is_real_trading_symbol(symbol):
                 continue
+            direction = "BUY" if deal.type == mt5.DEAL_TYPE_BUY else "SELL"
+            entry_dict[deal.position_id] = {
+                "entry_price": deal.price,
+                "symbol": symbol,
+                "direction": direction
+            }
 
-            real_deals_count += 1
+        trade_list = []
+        for deal in deals:
+            symbol = (deal.symbol or "").strip()
+            if deal.entry != mt5.DEAL_ENTRY_OUT or not is_real_trading_symbol(symbol):
+                continue
+            if deal.position_id in entry_dict:
+                entry_data = entry_dict[deal.position_id]
+                trade_list.append({
+                    "date": datetime.fromtimestamp(deal.time),
+                    "pair": symbol,
+                    "type": entry_data["direction"],
+                    "size": deal.volume,
+                    "entry": entry_data["entry_price"],
+                    "exist": deal.price,
+                    "profit": deal.profit,
+                })
 
-            stats = symbol_stats[symbol]
-            stats["profit"] += deal.profit
+        if not trade_list:
+            show_results(0, "0.0%", acc_info.balance,
+                        "No real trading symbols found in history.\n(Deposits, withdrawals, swaps, corrections skipped)", None)
+            return
+
+        # ─── Sort + calculate cumulative equity ───
+        trade_list.sort(key=lambda x: x["date"])
+        total_trading_profit = sum(t["profit"] for t in trade_list)
+        initial_equity = round(acc_info.balance - total_trading_profit, 2)
+        cum = initial_equity
+        for t in trade_list:
+            cum += t["profit"]
+            t["cumulative_equity"] = round(cum, 2)
+
+        # ─── Build stats (same logic as original) ───
+        symbol_stats = defaultdict(lambda: {"profit": 0.0, "count": 0, "wins": 0})
+        for trade in trade_list:
+            stats = symbol_stats[trade["pair"]]
+            stats["profit"] += trade["profit"]
             stats["count"]  += 1
-
-            if deal.profit > 0:
+            if trade["profit"] > 0:
                 stats["wins"] += 1
 
-        if not symbol_stats:
-            show_results(real_deals_count, "0.0%", acc_info.balance,
-                        "No real trading symbols found in history.\n(Deposits, withdrawals, swaps, corrections skipped)")
-            return
+        total_real_trades = len(trade_list)
+        total_wins        = sum(d["wins"]  for d in symbol_stats.values())
+        win_rate = f"{(total_wins / total_real_trades * 100):.1f}%" if total_real_trades > 0 else "0.0%"
 
         best_pair = max(symbol_stats.items(), key=lambda x: x[1]["profit"])
         best_symbol, best_data = best_pair
@@ -141,28 +251,24 @@ def connect_and_analyze():
         most_traded_pair = max(symbol_stats.items(), key=lambda x: x[1]["count"])
         most_symbol, most_data = most_traded_pair
 
-        total_real_trades = sum(d["count"] for d in symbol_stats.values())
-        total_wins        = sum(d["wins"]  for d in symbol_stats.values())
-
-        win_rate = f"{(total_wins / total_real_trades * 100):.1f}%" if total_real_trades > 0 else "0.0%"
-
         if best_symbol == most_symbol:
             rec = (
-                f"**{best_symbol}** is your best & most traded pair!\n"
-                f"• Profit: **${best_data['profit']:,.2f}**\n"
-                f"• Trades: **{best_data['count']}**  (win rate: {best_data['wins']/best_data['count']*100:.1f}% if >0 trades)"
+                f"{best_symbol} is your best & most traded pair!\n"
+                f"• Profit: ${best_data['profit']:,.2f}\n"
+                f"• Trades: {best_data['count']}  (win rate: {best_data['wins']/best_data['count']*100:.1f}% if >0 trades)"
             )
         else:
             rec = (
-                f"Your **highest returning** pair: **{best_symbol}** (+${best_data['profit']:,.2f})\n"
-                f"Your **most traded** pair: **{most_symbol}** ({most_data['count']} trades)"
+                f"Your highest returning pair: {best_symbol} (+${best_data['profit']:,.2f})\n"
+                f"Your most traded pair: {most_symbol} ({most_data['count']} trades)"
             )
 
         show_results(
             total_real_trades,
             win_rate,
             acc_info.balance,
-            rec
+            rec,
+            trade_list
         )
 
     except Exception as e:
@@ -172,7 +278,7 @@ def connect_and_analyze():
         mt5.shutdown()
 
 
-def show_results(total_trades, win_rate, balance, recommendation):
+def show_results(total_trades, win_rate, balance, recommendation, trades_list=None):
     for widget in results_frame.winfo_children():
         widget.destroy()
 
@@ -202,6 +308,20 @@ def show_results(total_trades, win_rate, balance, recommendation):
 
         row += 1
 
+    # NEW: Store data for CSV/graph + add buttons
+    global trades_data
+    trades_data = [trade.copy() for trade in trades_list] if trades_list else None
+
+    if trades_list:
+        ttk.Separator(results_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=(15,5))
+        row += 1
+
+        btn_frame = tk.Frame(results_frame, bg="white")
+        btn_frame.grid(row=row, column=0, columnspan=2, pady=10)
+
+        ttk.Button(btn_frame, text="📊 Export to CSV", command=export_to_csv).pack(side=tk.LEFT, padx=15)
+        ttk.Button(btn_frame, text="📈 Equity Graph (Save PNG)", command=generate_equity_graph).pack(side=tk.LEFT, padx=15)
+
 
 def clear_results():
     for widget in results_frame.winfo_children():
@@ -215,6 +335,8 @@ def clear_results():
     ).pack(pady=100)
 
     status_var.set("Ready")
+    global trades_data
+    trades_data = None
 
 
 # ────────────────────────────────────────────────
@@ -222,7 +344,7 @@ def clear_results():
 # ────────────────────────────────────────────────
 root = tk.Tk()
 root.title(appName)
-root.geometry("600x600")           # slightly taller + wider to feel more comfortable
+root.geometry("600x600")
 root.resizable(False, False)
 root.configure(bg="#f0f2f5")
 
@@ -335,7 +457,7 @@ results_frame.pack(pady=10, padx=35, fill=tk.X, expand=False)
 
 clear_results()  # init placeholder
 
-# Mouse wheel scrolling support (Windows/macOS/Linux)
+
 def _on_mousewheel(event):
     canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
@@ -343,7 +465,7 @@ def _on_linux_scroll(event):
     canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
 
 root.bind_all("<MouseWheel>", _on_mousewheel)
-root.bind_all("<Button-4>", _on_linux_scroll)  # Linux scroll up
-root.bind_all("<Button-5>", _on_linux_scroll)  # Linux scroll down
+root.bind_all("<Button-4>", _on_linux_scroll)  
+root.bind_all("<Button-5>", _on_linux_scroll)  
 
 root.mainloop()

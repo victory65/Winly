@@ -3,8 +3,8 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['MetaTrader5', 'MetaTrader5.common', 'MetaTrader5.metaquotes', 'numpy', 'numpy.core', 'numpy.core.multiarray', 'numpy._core.multiarray', 'numpy.lib.format']
-tmp_ret = collect_all('numpy')
+hiddenimports = []
+tmp_ret = collect_all('MetaTrader5')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
@@ -29,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Winly',
+    name='winly',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -42,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['winly.ico'],
+    icon=['winly_icon.ico'],
 )
